@@ -191,8 +191,10 @@ func uploadFile(filename string) error {
 
 	// 构建文件访问地址
 	fileUrl := fmt.Sprintf("%s/%s", obsToken.Domain, input.Key)
+	sourceUrl := fmt.Sprintf("https://leicloud-huawei.obs.cn-north-4.myhuaweicloud.com/%s", input.Key)
 	fmt.Printf("文件上传成功！\n")
-	fmt.Printf("文件URL: %s\n", fileUrl)
+	fmt.Printf("源地址（华为云）: %s\n", sourceUrl)
+	fmt.Printf("CDN地址（带缓存）: %s\n", fileUrl)
 	return nil
 }
 
