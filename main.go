@@ -203,10 +203,10 @@ func deleteFile(filename string) error {
 		return fmt.Errorf("获取token失败: %v", err)
 	}
 
-	// 获取上传凭证（用于获取OBS配置）
+	// 获取上传凭证
 	obsToken, err := getUploadToken(filename, token)
 	if err != nil {
-		return fmt.Errorf("获取OBS配置失败: %v", err)
+		return fmt.Errorf("获取上传凭证失败: %v", err)
 	}
 
 	// 创建OBS客户端
@@ -215,18 +215,22 @@ func deleteFile(filename string) error {
 		return fmt.Errorf("创建OBS客户端失败: %v", err)
 	}
 
-	// 创建删除输入
-	input := &obs.DeleteObjectInput{}
+	// 创建空文件内容
+	emptyContent := bytes.NewReader([]byte{})
+
+	// 创建上传输入
+	input := &obs.PutObjectInput{}
 	input.Bucket = obsToken.Bucket
 	input.Key = fmt.Sprintf("resources/web/%s", filepath.Base(filename))
+	input.Body = emptyContent
 
-	// 执行删除
-	_, err = obsClient.DeleteObject(input)
+	// 执行上传
+	_, err = obsClient.PutObject(input)
 	if err != nil {
-		return fmt.Errorf("删除文件失败: %v", err)
+		return fmt.Errorf("上传空文件失败: %v", err)
 	}
 
-	fmt.Printf("文件删除成功！\n")
+	fmt.Printf("文件已清空！\n")
 	return nil
 }
 
