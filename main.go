@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/huaweicloud/huaweicloud-sdk-go-obs/obs"
@@ -65,47 +68,70 @@ func getToken() (string, error) {
 	}
 
 	// 如果缓存不存在或已过期，重新登录获取token
-	loginReq := LoginRequest{
-		LoginName:  "oboard7@teml.net",
-		Password:   "45977E064B593F32120B82C095BF5423",
-		Device:     "HUAWEI-HELL",
-		AppVersion: "36",
-		WebEnv:     "1",
+	loginData := url.Values{}
+	loginData.Set("loginName", "hfdhdfhfd")
+	loginData.Set("password", "Aa123456")
+
+	// 创建一个 cookie jar
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return "", fmt.Errorf("创建 cookie jar 失败: %v", err)
 	}
 
-	jsonData, err := json.Marshal(loginReq)
+	// 创建一个允许重定向的客户端，并设置 cookie jar
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		Jar:     jar,
+	}
+
+	// 创建请求
+	req, err := http.NewRequest("POST", "https://courseapi.ulearning.cn/users/login/v2", strings.NewReader(loginData.Encode()))
 	if err != nil {
 		return "", err
 	}
 
-	req, err := http.NewRequest("POST", "https://apps.ulearning.cn/login", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return "", err
-	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	req.Header.Set("uversion", "2")
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{}
+	// 发送请求
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("发送请求失败: %v", err)
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
+	// 获取所有 cookies
+	cookies := jar.Cookies(req.URL)
+
+	// 从 cookie jar 中获取 token
+	var token string
+	for _, cookie := range cookies {
+		if cookie.Name == "token" {
+			token = cookie.Value
+			break
+		}
 	}
 
-	var loginResp LoginResponse
-	if err := json.Unmarshal(body, &loginResp); err != nil {
-		return "", err
+	if token == "" {
+		// 如果没有找到 token，尝试从 AUTHORIZATION cookie 获取
+		for _, cookie := range cookies {
+			if cookie.Name == "AUTHORIZATION" {
+				token = cookie.Value
+				break
+			}
+		}
+	}
+
+	if token == "" {
+		// 构建详细的错误信息
+		return "", fmt.Errorf("未找到 token cookie (状态码: %d, 响应头: %v, Cookies: %v)",
+			resp.StatusCode,
+			resp.Header,
+			cookies)
 	}
 
 	// 缓存token，设置1小时过期
 	cache := TokenCache{
-		Token:      loginResp.Token,
+		Token:      token,
 		ExpireTime: time.Now().Add(time.Hour),
 	}
 
@@ -118,7 +144,7 @@ func getToken() (string, error) {
 		return "", err
 	}
 
-	return loginResp.Token, nil
+	return token, nil
 }
 
 func getUploadToken(filename, token string) (*ObsToken, error) {
