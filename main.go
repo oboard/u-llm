@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -177,95 +178,132 @@ func getUploadToken(filename, token string) (*ObsToken, error) {
 	return &apiResp.Result, nil
 }
 
-func uploadFile(filename string) error {
+// uploadToObs 处理文件上传到OBS的核心逻辑
+func uploadToObs(reader io.Reader, filename string) (string, string, error) {
 	// 获取token
 	token, err := getToken()
 	if err != nil {
-		return fmt.Errorf("获取token失败: %v", err)
+		return "", "", fmt.Errorf("获取token失败: %v", err)
 	}
 
 	// 获取上传凭证
 	obsToken, err := getUploadToken(filename, token)
 	if err != nil {
-		return fmt.Errorf("获取上传凭证失败: %v", err)
+		return "", "", fmt.Errorf("获取上传凭证失败: %v", err)
 	}
 
 	// 创建OBS客户端
 	obsClient, err := obs.New(obsToken.AK, obsToken.SK, obsToken.Endpoint, obs.WithSecurityToken(obsToken.SecurityToken))
 	if err != nil {
-		return fmt.Errorf("创建OBS客户端失败: %v", err)
+		return "", "", fmt.Errorf("创建OBS客户端失败: %v", err)
 	}
-
-	// 打开要上传的文件
-	file, err := os.Open(filename)
-	if err != nil {
-		return fmt.Errorf("打开文件失败: %v", err)
-	}
-	defer file.Close()
 
 	// 创建上传输入
 	input := &obs.PutObjectInput{}
 	input.Bucket = obsToken.Bucket
 	input.Key = fmt.Sprintf("resources/web/%s", filepath.Base(filename))
-	input.Body = file
+	input.Body = reader
 
 	// 执行上传
 	_, err = obsClient.PutObject(input)
 	if err != nil {
-		return fmt.Errorf("上传文件失败: %v", err)
+		return "", "", fmt.Errorf("上传文件失败: %v", err)
 	}
 
 	// 构建文件访问地址
 	fileUrl := fmt.Sprintf("%s/%s", obsToken.Domain, input.Key)
 	sourceUrl := fmt.Sprintf("https://leicloud-huawei.obs.cn-north-4.myhuaweicloud.com/%s", input.Key)
-	fmt.Printf("文件上传成功！\n")
-	fmt.Printf("源地址（华为云）: %s\n", sourceUrl)
-	fmt.Printf("CDN地址（带缓存）: %s\n", fileUrl)
-	return nil
+	return fileUrl, sourceUrl, nil
+}
+
+func handleUpload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "只支持 POST 请求", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// 设置最大文件大小为 4GB
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<30)
+
+	// 从请求中获取文件
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, fmt.Sprintf("获取文件失败: %v", err), http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	// 创建临时文件
+	tempFile, err := os.CreateTemp("", "udrive-*")
+	if err != nil {
+		http.Error(w, fmt.Sprintf("创建临时文件失败: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer os.Remove(tempFile.Name())
+	defer tempFile.Close()
+
+	// 将上传的文件复制到临时文件
+	if _, err := io.Copy(tempFile, file); err != nil {
+		http.Error(w, fmt.Sprintf("保存文件失败: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// 重置文件指针到开始位置
+	if _, err := tempFile.Seek(0, 0); err != nil {
+		http.Error(w, fmt.Sprintf("重置文件指针失败: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// 上传文件
+	fileUrl, sourceUrl, err := uploadToObs(tempFile, header.Filename)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("上传文件失败: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// 返回成功响应
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"message":   "文件上传成功",
+		"file":      header.Filename,
+		"sourceUrl": sourceUrl,
+		"cdnUrl":    fileUrl,
+	})
 }
 
 func deleteFile(filename string) error {
-	// 获取token
-	token, err := getToken()
-	if err != nil {
-		return fmt.Errorf("获取token失败: %v", err)
-	}
-
-	// 获取上传凭证
-	obsToken, err := getUploadToken(filename, token)
-	if err != nil {
-		return fmt.Errorf("获取上传凭证失败: %v", err)
-	}
-
-	// 创建OBS客户端
-	obsClient, err := obs.New(obsToken.AK, obsToken.SK, obsToken.Endpoint, obs.WithSecurityToken(obsToken.SecurityToken))
-	if err != nil {
-		return fmt.Errorf("创建OBS客户端失败: %v", err)
-	}
-
 	// 创建空文件内容
 	emptyContent := bytes.NewReader([]byte{})
 
-	// 创建上传输入
-	input := &obs.PutObjectInput{}
-	input.Bucket = obsToken.Bucket
-	input.Key = fmt.Sprintf("resources/web/%s", filepath.Base(filename))
-	input.Body = emptyContent
-
-	// 执行上传
-	_, err = obsClient.PutObject(input)
+	// 上传空文件（覆盖原文件）
+	_, _, err := uploadToObs(emptyContent, filename)
 	if err != nil {
-		return fmt.Errorf("上传空文件失败: %v", err)
+		return fmt.Errorf("删除文件失败: %v", err)
 	}
 
 	fmt.Printf("文件已清空！\n")
 	return nil
 }
 
+func startServer(port int) error {
+	http.HandleFunc("/upload", handleUpload)
+
+	addr := fmt.Sprintf(":%d", port)
+	fmt.Printf("服务器启动在 http://localhost%s\n", addr)
+	fmt.Printf("使用 POST 请求上传文件，例如：\n")
+	fmt.Printf("curl -X POST -F \"file=@your_file.txt\" http://localhost%s/upload\n", addr)
+
+	return http.ListenAndServe(addr, nil)
+}
+
 func main() {
 	// 定义命令行参数
 	uploadCmd := flag.NewFlagSet("upload", flag.ExitOnError)
 	deleteCmd := flag.NewFlagSet("delete", flag.ExitOnError)
+	serveCmd := flag.NewFlagSet("serve", flag.ExitOnError)
+
+	// 定义serve命令的端口参数
+	port := serveCmd.Int("port", 8080, "服务器端口号")
 
 	// 检查命令行参数
 	if len(os.Args) < 2 || os.Args[1] == "-h" || os.Args[1] == "--help" {
@@ -273,6 +311,7 @@ func main() {
 		fmt.Println("可用命令:")
 		fmt.Println("  upload <filename>    上传文件")
 		fmt.Println("  delete <filename>    删除文件")
+		fmt.Println("  serve --port PORT    启动HTTP服务器")
 		fmt.Println("\n选项:")
 		fmt.Println("  -h, --help           显示帮助信息")
 		os.Exit(1)
@@ -288,10 +327,22 @@ func main() {
 			os.Exit(1)
 		}
 		filename := uploadCmd.Arg(0)
-		if err := uploadFile(filename); err != nil {
+		file, err := os.Open(filename)
+		if err != nil {
 			fmt.Printf("错误: %v\n", err)
 			os.Exit(1)
 		}
+		defer file.Close()
+
+		fileUrl, sourceUrl, err := uploadToObs(file, filename)
+		if err != nil {
+			fmt.Printf("错误: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("文件上传成功！\n")
+		fmt.Printf("源地址（华为云）: %s\n", sourceUrl)
+		fmt.Printf("CDN地址（带缓存）: %s\n", fileUrl)
+
 	case "delete":
 		deleteCmd.Parse(os.Args[2:])
 		if deleteCmd.NArg() != 1 {
@@ -304,12 +355,18 @@ func main() {
 			fmt.Printf("错误: %v\n", err)
 			os.Exit(1)
 		}
+	case "serve":
+		serveCmd.Parse(os.Args[2:])
+		if err := startServer(*port); err != nil {
+			log.Fatalf("服务器启动失败: %v", err)
+		}
 	default:
 		fmt.Printf("未知命令: %s\n", os.Args[1])
 		fmt.Println("使用方法: udrive <command> [arguments]")
 		fmt.Println("可用命令:")
 		fmt.Println("  upload <filename>    上传文件")
 		fmt.Println("  delete <filename>    删除文件")
+		fmt.Println("  serve --port PORT    启动HTTP服务器")
 		os.Exit(1)
 	}
 }
