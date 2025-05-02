@@ -31,4 +31,4 @@ COPY --from=builder /app/udrive-cli .
 EXPOSE 2345
 
 # 设置入口点
-ENTRYPOINT ["./udrive-cli serve --port 2345"] 
+ENTRYPOINT ["./udrive-cli"] 
