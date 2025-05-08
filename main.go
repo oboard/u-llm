@@ -201,6 +201,11 @@ func uploadToObs(reader io.Reader, filename string) (string, string, error) {
 		}
 	}
 
+	// 检查文件大小是否超过5GB
+	if fileSize > 5*1024*1024*1024 {
+		return "", "", fmt.Errorf("文件大小超过5GB限制")
+	}
+
 	// 创建进度条
 	bar := progressbar.NewOptions64(
 		fileSize,
