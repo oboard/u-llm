@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/huaweicloud/huaweicloud-sdk-go-obs/obs"
+	"github.com/schollz/progressbar/v3"
 )
 
 type ObsToken struct {
@@ -180,6 +181,49 @@ func getUploadToken(filename, token string) (*ObsToken, error) {
 
 // uploadToObs 处理文件上传到OBS的核心逻辑
 func uploadToObs(reader io.Reader, filename string) (string, string, error) {
+	// 获取文件大小
+	var fileSize int64
+	if seeker, ok := reader.(io.Seeker); ok {
+		// 保存当前位置
+		currentPos, err := seeker.Seek(0, io.SeekCurrent)
+		if err != nil {
+			return "", "", fmt.Errorf("获取文件位置失败: %v", err)
+		}
+		// 获取文件大小
+		fileSize, err = seeker.Seek(0, io.SeekEnd)
+		if err != nil {
+			return "", "", fmt.Errorf("获取文件大小失败: %v", err)
+		}
+		// 恢复位置
+		_, err = seeker.Seek(currentPos, io.SeekStart)
+		if err != nil {
+			return "", "", fmt.Errorf("恢复文件位置失败: %v", err)
+		}
+	}
+
+	// 创建进度条
+	bar := progressbar.NewOptions64(
+		fileSize,
+		progressbar.OptionSetDescription("正在上传文件..."),
+		progressbar.OptionSetTheme(progressbar.Theme{
+			Saucer:        "=",
+			SaucerHead:    ">",
+			SaucerPadding: " ",
+			BarStart:      "[",
+			BarEnd:        "]",
+		}),
+		progressbar.OptionShowBytes(true),
+		progressbar.OptionSetWidth(50),
+		progressbar.OptionThrottle(100*time.Millisecond),
+		progressbar.OptionShowCount(),
+		progressbar.OptionOnCompletion(func() {
+			fmt.Fprint(os.Stderr, "\n")
+		}),
+	)
+
+	// 创建带进度条的读取器
+	progressReader := progressbar.NewReader(reader, bar)
+
 	// 获取token
 	token, err := getToken()
 	if err != nil {
@@ -202,7 +246,7 @@ func uploadToObs(reader io.Reader, filename string) (string, string, error) {
 	input := &obs.PutObjectInput{}
 	input.Bucket = obsToken.Bucket
 	input.Key = fmt.Sprintf("resources/web/%s", filepath.Base(filename))
-	input.Body = reader
+	input.Body = &progressReader
 
 	// 执行上传
 	_, err = obsClient.PutObject(input)
