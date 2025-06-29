@@ -354,11 +354,15 @@ func main() {
 	// 定义serve命令的端口参数
 	port := serveCmd.Int("port", 8080, "服务器端口号")
 
+	// 定义upload命令的重命名参数
+	remoteName := uploadCmd.String("r", "", "上传后的文件名")
+
 	// 检查命令行参数
 	if len(os.Args) < 2 || os.Args[1] == "-h" || os.Args[1] == "--help" {
 		fmt.Println("使用方法: udrive <command> [arguments]")
 		fmt.Println("可用命令:")
 		fmt.Println("  upload <filename>    上传文件")
+		fmt.Println("    -r <remotename>    指定上传后的文件名")
 		fmt.Println("  delete <filename>    删除文件")
 		fmt.Println("  serve --port PORT    启动HTTP服务器")
 		fmt.Println("\n选项:")
@@ -372,7 +376,7 @@ func main() {
 		uploadCmd.Parse(os.Args[2:])
 		if uploadCmd.NArg() != 1 {
 			fmt.Println("错误: 请指定要上传的文件名")
-			fmt.Println("使用方法: udrive upload <filename>")
+			fmt.Println("使用方法: udrive upload [-r 远程文件名] <filename>")
 			os.Exit(1)
 		}
 		filename := uploadCmd.Arg(0)
@@ -383,7 +387,13 @@ func main() {
 		}
 		defer file.Close()
 
-		fileUrl, sourceUrl, err := uploadToObs(file, filename)
+		// 使用指定的远程文件名或本地文件名
+		remoteFilename := filename
+		if *remoteName != "" {
+			remoteFilename = *remoteName
+		}
+
+		fileUrl, sourceUrl, err := uploadToObs(file, remoteFilename)
 		if err != nil {
 			fmt.Printf("错误: %v\n", err)
 			os.Exit(1)
@@ -414,6 +424,7 @@ func main() {
 		fmt.Println("使用方法: udrive <command> [arguments]")
 		fmt.Println("可用命令:")
 		fmt.Println("  upload <filename>    上传文件")
+		fmt.Println("    -r <remotename>    指定上传后的文件名")
 		fmt.Println("  delete <filename>    删除文件")
 		fmt.Println("  serve --port PORT    启动HTTP服务器")
 		os.Exit(1)
