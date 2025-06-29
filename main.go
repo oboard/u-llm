@@ -282,6 +282,13 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
+	// 获取远程文件名参数
+	remoteName := r.FormValue("remotename")
+	filename := header.Filename
+	if remoteName != "" {
+		filename = remoteName
+	}
+
 	// 创建临时文件
 	tempFile, err := os.CreateTemp("", "udrive-*")
 	if err != nil {
@@ -304,7 +311,7 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 上传文件
-	fileUrl, sourceUrl, err := uploadToObs(tempFile, header.Filename)
+	fileUrl, sourceUrl, err := uploadToObs(tempFile, filename)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("上传文件失败: %v", err), http.StatusInternalServerError)
 		return
@@ -313,10 +320,11 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 	// 返回成功响应
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
-		"message":   "文件上传成功",
-		"file":      header.Filename,
-		"sourceUrl": sourceUrl,
-		"cdnUrl":    fileUrl,
+		"message":    "文件上传成功",
+		"file":       header.Filename,
+		"remoteName": filename,
+		"sourceUrl":  sourceUrl,
+		"cdnUrl":     fileUrl,
 	})
 }
 
@@ -341,6 +349,8 @@ func startServer(port int) error {
 	fmt.Printf("服务器启动在 http://localhost%s\n", addr)
 	fmt.Printf("使用 POST 请求上传文件，例如：\n")
 	fmt.Printf("curl -X POST -F \"file=@your_file.txt\" http://localhost%s/upload\n", addr)
+	fmt.Printf("指定远程文件名：\n")
+	fmt.Printf("curl -X POST -F \"file=@your_file.txt\" -F \"remotename=new_name.txt\" http://localhost%s/upload\n", addr)
 
 	return http.ListenAndServe(addr, nil)
 }
@@ -365,6 +375,7 @@ func main() {
 		fmt.Println("    -r <remotename>    指定上传后的文件名")
 		fmt.Println("  delete <filename>    删除文件")
 		fmt.Println("  serve --port PORT    启动HTTP服务器")
+		fmt.Println("    可通过POST请求参数remotename指定上传后的文件名")
 		fmt.Println("\n选项:")
 		fmt.Println("  -h, --help           显示帮助信息")
 		os.Exit(1)
@@ -427,6 +438,7 @@ func main() {
 		fmt.Println("    -r <remotename>    指定上传后的文件名")
 		fmt.Println("  delete <filename>    删除文件")
 		fmt.Println("  serve --port PORT    启动HTTP服务器")
+		fmt.Println("    可通过POST请求参数remotename指定上传后的文件名")
 		os.Exit(1)
 	}
 }
