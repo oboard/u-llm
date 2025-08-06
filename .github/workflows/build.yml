@@ -25,12 +25,14 @@ jobs:
 
       - name: Build binary
         run: |
-          OUTPUT_NAME=ullm-${{ matrix.os }}-${{ matrix.arch }}
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            OUTPUT_NAME="${OUTPUT_NAME}.exe"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            go build -v -o ullm-${{ matrix.os }}-${{ matrix.arch }}.exe ./...
+            echo "OUTPUT_NAME=ullm-${{ matrix.os }}-${{ matrix.arch }}.exe" >> $GITHUB_ENV
+          else
+            go build -v -o ullm-${{ matrix.os }}-${{ matrix.arch }} ./...
+            echo "OUTPUT_NAME=ullm-${{ matrix.os }}-${{ matrix.arch }}" >> $GITHUB_ENV
           fi
-          echo "OUTPUT_NAME=$OUTPUT_NAME" >> $GITHUB_ENV
-          go build -v -o $OUTPUT_NAME ./...
+        shell: bash
 
       - name: Run tests
         run: go test -v ./...
@@ -39,5 +41,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            OUTPUT_NAME="ullm-${{ matrix.os }}-${{ matrix.arch }}.exe"
+          else
+            OUTPUT_NAME="ullm-${{ matrix.os }}-${{ matrix.arch }}"
+          fi
           echo "Uploading $OUTPUT_NAME to release"
           gh release upload "$GITHUB_REF_NAME" "$OUTPUT_NAME" --clobber
+        shell: bash
