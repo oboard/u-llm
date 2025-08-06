@@ -14,7 +14,7 @@ RUN go mod download
 COPY . .
 
 # 构建应用
-RUN CGO_ENABLED=0 GOOS=linux go build -o udrive-cli .
+RUN CGO_ENABLED=0 GOOS=linux go build -o ullm .
 
 # 使用轻量级的 alpine 镜像作为运行环境
 FROM alpine:latest
@@ -25,10 +25,10 @@ RUN apk --no-cache add ca-certificates
 WORKDIR /app
 
 # 从构建阶段复制编译好的应用
-COPY --from=builder /app/udrive-cli .
+COPY --from=builder /app/ullm .
 
 # 暴露端口（如果需要运行 HTTP 服务器）
 EXPOSE 2345
 
 # 设置入口点
-ENTRYPOINT ["./udrive-cli"] 
+ENTRYPOINT ["./ullm"] 

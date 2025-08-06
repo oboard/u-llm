@@ -22,7 +22,11 @@ jobs:
           
       - name: Build
         run: |
-          go build -v -o udrive-${{ matrix.os }}-${{ matrix.arch }} ./...
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            go build -v -o ullm-${{ matrix.os }}-${{ matrix.arch }}.exe ./...
+          else
+            go build -v -o ullm-${{ matrix.os }}-${{ matrix.arch }} ./...
+          fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -35,6 +39,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ github.event.release.upload_url }}
-          asset_path: ./udrive-${{ matrix.os }}-${{ matrix.arch }}
-          asset_name: udrive-${{ matrix.os }}-${{ matrix.arch }}
+          asset_path: ${{ matrix.os == 'windows-latest' && format('./ullm-{0}-{1}.exe', matrix.os, matrix.arch) || format('./ullm-{0}-{1}', matrix.os, matrix.arch) }}
+          asset_name: ${{ matrix.os == 'windows-latest' && format('ullm-{0}-{1}.exe', matrix.os, matrix.arch) || format('ullm-{0}-{1}', matrix.os, matrix.arch) }}
           asset_content_type: application/octet-stream
