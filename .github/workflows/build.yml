@@ -35,8 +35,6 @@ jobs:
       - name: Run tests
         run: go test -v ./...
 
-      - uses: cli/gh-action@v2
-
       - name: Upload to GitHub Releases
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
