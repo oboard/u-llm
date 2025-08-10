@@ -100,7 +100,7 @@ type ModelConfig struct {
 // 统一的模型配置
 var ModelConfigs = []ModelConfig{
 	{
-		ID:      "qianwen",
+		ID:      "qwen",
 		APIID:   "1",
 		Object:  "model",
 		Created: 1677610602,
@@ -121,7 +121,7 @@ var ModelConfigs = []ModelConfig{
 		OwnedBy: "ulearning",
 	},
 	{
-		ID:      "qianwen-vl",
+		ID:      "qwen2.5-vl-7b",
 		APIID:   "4",
 		Object:  "model",
 		Created: 1712361441,
