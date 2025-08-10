@@ -80,15 +80,6 @@ type ChatCompletionChunk struct {
 	Choices []StreamChoice `json:"choices"`
 }
 
-type ChatCompletionChunkWithUsage struct {
-	ID      string         `json:"id"`
-	Object  string         `json:"object"`
-	Created int64          `json:"created"`
-	Model   string         `json:"model"`
-	Usage   Usage          `json:"usage"`
-	Choices []StreamChoice `json:"choices"`
-}
-
 // 模型相关结构体
 type Model struct {
 	ID      string `json:"id"`

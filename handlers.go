@@ -8,9 +8,50 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
+
+// 常量定义
+const (
+	APIURL        = "https://cloudsearchapi.ulearning.cn/kbChat/chat"
+	HistoryAPIURL = "https://cloudsearchapi.ulearning.cn/kbChat/historyList?assistantId=6"
+	AssistantID   = "6"
+	SessionSign   = "2"
+	AskType       = "1"
+	FallbackMsg   = "抱歉，我无法处理您的请求。请稍后再试。"
+)
+
+// 辅助函数：返回空历史记录
+func returnEmptyHistory(w http.ResponseWriter) {
+	emptyHistory := OpenAIHistoryResponse{
+		Object: "list",
+		Data:   []OpenAIConversation{},
+	}
+	json.NewEncoder(w).Encode(emptyHistory)
+}
+
+// 辅助函数：解析SSE数据
+func parseSSEData(line string) (string, bool) {
+	if !strings.HasPrefix(line, "data:") {
+		return "", false
+	}
+	jsonData := strings.TrimPrefix(line, "data:")
+	var streamResp struct {
+		Data string `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(jsonData), &streamResp); err != nil {
+		return "", false
+	}
+	return streamResp.Data, true
+}
+
+// 辅助函数：创建响应元数据
+func createResponseMetadata() (string, int64) {
+	now := time.Now().Unix()
+	return fmt.Sprintf("chatcmpl-%d", now), now
+}
 
 func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Received chat completions request: %s %s", r.Method, r.URL.Path)
@@ -76,8 +117,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create request to Ulearning API
-	apiURL := "https://cloudsearchapi.ulearning.cn/kbChat/chat"
-	apiReq, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(jsonBody))
+	apiReq, err := http.NewRequest("POST", APIURL, bytes.NewBuffer(jsonBody))
 	if err != nil {
 		http.Error(w, "Failed to create request", http.StatusInternalServerError)
 		return
@@ -89,17 +129,12 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// Add query parameters
 	q := apiReq.URL.Query()
-	// 使用用户的API key作为sessionId，确保每个用户有独立的会话
-	q.Add("sessionId", userApiKey)
-	q.Add("assistantId", "6")
-
-	// 根据模型名称设置对应的modelId
-	modelId := GetModelAPIID(req.Model)
-	q.Add("modelId", modelId)
-
-	q.Add("sessionSign", "2")
-	q.Add("askType", "1")
-	q.Add("requestId", "23213")
+	q.Add("sessionId", userApiKey) // 使用用户的API key作为sessionId
+	q.Add("assistantId", AssistantID)
+	q.Add("modelId", GetModelAPIID(req.Model))
+	q.Add("sessionSign", SessionSign)
+	q.Add("askType", AskType)
+	q.Add("requestId", strconv.FormatInt(time.Now().Unix(), 10))
 	apiReq.URL.RawQuery = q.Encode()
 
 	// Send request
@@ -117,114 +152,55 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read and parse streaming response (SSE format)
-	scanner := bufio.NewScanner(resp.Body)
-	var fullContent string
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		// Handle Server-Sent Events format
-		if strings.HasPrefix(line, "data:") {
-			// Extract JSON data after "data:" prefix
-			jsonData := strings.TrimPrefix(line, "data:")
-			var streamResp struct {
-				Data string `json:"data"`
-			}
-			if err := json.Unmarshal([]byte(jsonData), &streamResp); err == nil {
-				fullContent += streamResp.Data
-			}
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		http.Error(w, "Failed to read response stream", http.StatusInternalServerError)
-		return
-	}
-
-	// 检查并处理空内容
-	if strings.TrimSpace(fullContent) == "" {
-		fullContent = "抱歉，我无法处理您的请求。请稍后再试。"
-		log.Printf("Warning: Empty response content, using fallback message")
-	}
-
-	log.Printf("Final response content length: %d", len(fullContent))
-
-	// Convert to OpenAI API format
-	openAIResp := ChatCompletionsResponse{
-		ID:      fmt.Sprintf("chatcmpl-%d", time.Now().Unix()),
-		Object:  "chat.completion",
-		Created: time.Now().Unix(),
-		Model:   req.Model,
-		Usage: struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
-			TotalTokens      int `json:"total_tokens"`
-		}{
-			PromptTokens:     0, // Token counts not available
-			CompletionTokens: 0, // Token counts not available
-			TotalTokens:      0, // Token counts not available
-		},
-		Choices: []Choice{
-			{
-				Message: Message{
-					Role:    "assistant",
-					Content: fullContent,
-				},
-				FinishReason: "stop",
-				Index:        0,
-			},
-		},
-	}
-
 	// 检查是否为流式请求
 	if req.Stream != nil && *req.Stream {
-		// 设置SSE响应头
+		// 流式响应：实时转发数据
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 
-		// 发送流式响应
 		flusher, ok := w.(http.Flusher)
 		if !ok {
 			http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
 			return
 		}
 
-		// 分块发送内容
-		words := strings.Fields(fullContent)
-		for i, word := range words {
-			chunkResp := ChatCompletionChunk{
-				ID:      openAIResp.ID,
-				Object:  "chat.completion.chunk",
-				Created: openAIResp.Created,
-				Model:   openAIResp.Model,
-				Choices: []StreamChoice{
-					{
-						Delta: Delta{
-							Content: word + " ",
-						},
+		// 生成响应ID和时间戳
+		responseID, createdTime := createResponseMetadata()
+
+		// 实时转发流式数据
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			if data, ok := parseSSEData(scanner.Text()); ok && data != "" {
+				// 转换为OpenAI格式并立即发送
+				chunkResp := ChatCompletionChunk{
+					ID:      responseID,
+					Object:  "chat.completion.chunk",
+					Created: createdTime,
+					Model:   req.Model,
+					Choices: []StreamChoice{{
+						Delta: Delta{Content: data},
 						Index: 0,
-					},
-				},
-			}
+					}},
+				}
 
-			chunkData, _ := json.Marshal(chunkResp)
-			fmt.Fprintf(w, "data: %s\n\n", string(chunkData))
-			flusher.Flush()
-
-			// 添加延迟以模拟流式效果
-			if i < len(words)-1 {
-				time.Sleep(50 * time.Millisecond)
+				chunkData, _ := json.Marshal(chunkResp)
+				fmt.Fprintf(w, "data: %s\n\n", string(chunkData))
+				flusher.Flush()
 			}
 		}
 
+		if err := scanner.Err(); err != nil {
+			log.Printf("Error reading stream: %v", err)
+		}
+
 		// 发送结束标记
-		usageResp := ChatCompletionChunkWithUsage{
-			ID:      openAIResp.ID,
+		finishResp := ChatCompletionChunk{
+			ID:      responseID,
 			Object:  "chat.completion.chunk",
-			Created: openAIResp.Created,
-			Model:   openAIResp.Model,
+			Created: createdTime,
+			Model:   req.Model,
 			Choices: []StreamChoice{
 				{
 					Delta:        Delta{},
@@ -232,15 +208,58 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 					FinishReason: "stop",
 				},
 			},
-			Usage: openAIResp.Usage,
 		}
 
-		usageData, _ := json.Marshal(usageResp)
-		fmt.Fprintf(w, "data: %s\n\n", string(usageData))
+		finishData, _ := json.Marshal(finishResp)
+		fmt.Fprintf(w, "data: %s\n\n", string(finishData))
 		fmt.Fprintf(w, "data: [DONE]\n\n")
 		flusher.Flush()
 	} else {
-		// 非流式响应
+		// 非流式响应：收集完整内容
+		scanner := bufio.NewScanner(resp.Body)
+		var fullContent string
+		for scanner.Scan() {
+			if data, ok := parseSSEData(scanner.Text()); ok {
+				fullContent += data
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			http.Error(w, "Failed to read response stream", http.StatusInternalServerError)
+			return
+		}
+
+		// 检查并处理空内容
+		if strings.TrimSpace(fullContent) == "" {
+			fullContent = FallbackMsg
+			log.Printf("Warning: Empty response content, using fallback message")
+		}
+
+		log.Printf("Final response content length: %d", len(fullContent))
+
+		// Convert to OpenAI API format
+		openAIResp := ChatCompletionsResponse{
+			ID:      fmt.Sprintf("chatcmpl-%d", time.Now().Unix()),
+			Object:  "chat.completion",
+			Created: time.Now().Unix(),
+			Model:   req.Model,
+			Usage: Usage{
+				PromptTokens:     0, // Token counts not available
+				CompletionTokens: 0, // Token counts not available
+				TotalTokens:      0, // Token counts not available
+			},
+			Choices: []Choice{
+				{
+					Message: Message{
+						Role:    "assistant",
+						Content: fullContent,
+					},
+					FinishReason: "stop",
+					Index:        0,
+				},
+			},
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(openAIResp)
 	}
@@ -276,35 +295,24 @@ func handleOpenAIHistory(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimPrefix(auth, "Bearer ")
 
 	// 调用kbChat API获取历史记录
-	kbChatURL := "https://cloudsearchapi.ulearning.cn/kbChat/historyList?assistantId=6"
-	req, err := http.NewRequest("GET", kbChatURL, nil)
+	req, err := http.NewRequest("GET", HistoryAPIURL, nil)
 	if err != nil {
 		log.Printf("Failed to create request: %v", err)
-		// 返回空的历史记录
-		emptyHistory := OpenAIHistoryResponse{
-			Object: "list",
-			Data:   []OpenAIConversation{},
-		}
-		json.NewEncoder(w).Encode(emptyHistory)
+		returnEmptyHistory(w)
 		return
 	}
 
 	// 设置请求头
 	req.Header.Set("Authorization", token)
 	req.Header.Set("Content-Type", "application/json")
-	log.Printf("Calling kbChat API: %s with token: %s", kbChatURL, token)
+	log.Printf("Calling kbChat API: %s with token: %s", HistoryAPIURL, token)
 
 	// 发送请求
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("Failed to fetch history from kbChat API: %v", err)
-		// 返回空的历史记录
-		emptyHistory := OpenAIHistoryResponse{
-			Object: "list",
-			Data:   []OpenAIConversation{},
-		}
-		json.NewEncoder(w).Encode(emptyHistory)
+		returnEmptyHistory(w)
 		return
 	}
 	defer resp.Body.Close()
@@ -315,12 +323,7 @@ func handleOpenAIHistory(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		log.Printf("Failed to read response: %v", err)
-		// 返回空的历史记录
-		emptyHistory := OpenAIHistoryResponse{
-			Object: "list",
-			Data:   []OpenAIConversation{},
-		}
-		json.NewEncoder(w).Encode(emptyHistory)
+		returnEmptyHistory(w)
 		return
 	}
 
@@ -329,12 +332,7 @@ func handleOpenAIHistory(w http.ResponseWriter, r *http.Request) {
 	// 检查API响应状态
 	if resp.StatusCode != 200 {
 		log.Printf("kbChat API returned non-200 status: %d, returning empty history", resp.StatusCode)
-		// 返回空的历史记录
-		emptyHistory := OpenAIHistoryResponse{
-			Object: "list",
-			Data:   []OpenAIConversation{},
-		}
-		json.NewEncoder(w).Encode(emptyHistory)
+		returnEmptyHistory(w)
 		return
 	}
 
@@ -342,12 +340,7 @@ func handleOpenAIHistory(w http.ResponseWriter, r *http.Request) {
 	var historyResp HistoryResponse
 	if err := json.Unmarshal(body, &historyResp); err != nil {
 		log.Printf("Failed to parse history response: %v, body: %s", err, string(body))
-		// 返回空的历史记录而不是错误
-		emptyHistory := OpenAIHistoryResponse{
-			Object: "list",
-			Data:   []OpenAIConversation{},
-		}
-		json.NewEncoder(w).Encode(emptyHistory)
+		returnEmptyHistory(w)
 		return
 	}
 
