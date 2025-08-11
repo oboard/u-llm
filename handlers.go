@@ -99,14 +99,52 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extract text content from the last message
-	lastMessage := req.Messages[len(req.Messages)-1]
-	textContent := extractTextContent(lastMessage.Content)
-	log.Printf("Extracted text content: %s", textContent)
+	// 构建完整的prompt，包括系统提示词和用户消息
+	var prompt strings.Builder
+	var hasSystemMessage bool
+	
+	// 处理系统消息
+	for _, msg := range req.Messages {
+		if msg.Role == "system" {
+			systemContent := extractTextContent(msg.Content)
+			if systemContent != "" {
+				prompt.WriteString("System: ")
+				prompt.WriteString(systemContent)
+				prompt.WriteString("\n\n")
+				hasSystemMessage = true
+			}
+		}
+	}
+	
+	// 处理用户消息（取最后一条用户消息）
+	var userContent string
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if req.Messages[i].Role == "user" {
+			userContent = extractTextContent(req.Messages[i].Content)
+			break
+		}
+	}
+	
+	var finalPrompt string
+	if hasSystemMessage && userContent != "" {
+		// 有系统消息时，添加前缀
+		prompt.WriteString("User: ")
+		prompt.WriteString(userContent)
+		finalPrompt = prompt.String()
+	} else if userContent != "" {
+		// 没有系统消息时，直接使用用户内容
+		finalPrompt = userContent
+	} else {
+		// 如果没有找到有效内容，使用最后一条消息作为fallback
+		lastMessage := req.Messages[len(req.Messages)-1]
+		finalPrompt = extractTextContent(lastMessage.Content)
+	}
+	
+	log.Printf("Final prompt: %s", finalPrompt)
 
 	// Prepare request body
 	requestBody := map[string]any{
-		"query":  textContent,
+		"query":  finalPrompt,
 		"images": []string{},
 	}
 
