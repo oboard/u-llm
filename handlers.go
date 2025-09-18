@@ -53,8 +53,14 @@ func createResponseMetadata() (string, int64) {
 	return fmt.Sprintf("chatcmpl-%d", now), now
 }
 
+var stopSignal = func() *string {
+	finishReason := "stop"
+	return &finishReason
+}()
+
 func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
-	log.Printf("Received chat completions request: %s %s", r.Method, r.URL.Path)
+	// 生成请求ID用于追踪
+	requestID := fmt.Sprintf("req_%d", time.Now().UnixNano())
 
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -71,30 +77,33 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if userApiKey == auth { // 如果没有Bearer前缀
 		userApiKey = auth
 	}
-	log.Printf("User API key: %s", userApiKey)
 
-	// 读取请求体用于调试
+	// 读取请求体
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		log.Printf("Failed to read request body: %v", err)
+		log.Printf("[%s] ERROR: Failed to read request body: %v", requestID, err)
 		http.Error(w, "Failed to read request body", http.StatusBadRequest)
 		return
 	}
-	log.Printf("Request body: %s", string(body))
 
 	// 解析请求体
 	var req ChatCompletionsRequest
 	if json.Unmarshal(body, &req) != nil {
-		log.Printf("Failed to parse JSON: %v", err)
+		log.Printf("[%s] ERROR: Invalid JSON payload: %v", requestID, err)
 		http.Error(w, fmt.Sprintf("Invalid request payload: %v", err), http.StatusBadRequest)
 		return
 	}
-	log.Printf("Parsed request - Model: %s, Messages count: %d, Stream: %v", req.Model, len(req.Messages), req.Stream != nil && *req.Stream)
+
+	// 关键信息日志 - 一行搞定
+	log.Printf("[%s] model=%s msgs=%d stream=%v user=%.8s",
+		requestID, req.Model, len(req.Messages),
+		req.Stream != nil && *req.Stream, userApiKey)
 
 	// 调用 Ulearning API
 	// Get token for authentication
 	token, err := getToken()
 	if err != nil {
+		log.Printf("[%s] ERROR: Auth failed: %v", requestID, err)
 		http.Error(w, fmt.Sprintf("Failed to get token: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -102,7 +111,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 构建完整的prompt，包括系统提示词和用户消息
 	var prompt strings.Builder
 	var hasSystemMessage bool
-	
+
 	// 处理系统消息
 	for _, msg := range req.Messages {
 		if msg.Role == "system" {
@@ -115,7 +124,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	
+
 	// 处理用户消息（取最后一条用户消息）
 	var userContent string
 	for i := len(req.Messages) - 1; i >= 0; i-- {
@@ -124,7 +133,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	
+
 	var finalPrompt string
 	if hasSystemMessage && userContent != "" {
 		// 有系统消息时，添加前缀
@@ -139,8 +148,6 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		lastMessage := req.Messages[len(req.Messages)-1]
 		finalPrompt = extractTextContent(lastMessage.Content)
 	}
-	
-	log.Printf("Final prompt: %s", finalPrompt)
 
 	// Prepare request body
 	requestBody := map[string]any{
@@ -179,6 +186,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	client := &http.Client{}
 	resp, err := client.Do(apiReq)
 	if err != nil {
+		log.Printf("[%s] ERROR: API request failed: %v", requestID, err)
 		http.Error(w, fmt.Sprintf("Failed to send request: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -186,6 +194,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// Check response status
 	if resp.StatusCode != http.StatusOK {
+		log.Printf("[%s] ERROR: API status %d", requestID, resp.StatusCode)
 		http.Error(w, fmt.Sprintf("API request failed with status: %d", resp.StatusCode), resp.StatusCode)
 		return
 	}
@@ -218,8 +227,9 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 					Created: createdTime,
 					Model:   req.Model,
 					Choices: []StreamChoice{{
-						Delta: Delta{Content: data},
-						Index: 0,
+						Delta:        Delta{Content: data},
+						FinishReason: nil, // 中间消息的finish_reason为null
+						Index:        0,
 					}},
 				}
 
@@ -230,10 +240,11 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err := scanner.Err(); err != nil {
-			log.Printf("Error reading stream: %v", err)
+			log.Printf("[%s] ERROR: Stream read failed: %v", requestID, err)
 		}
 
 		// 发送结束标记
+		finishReason := "stop"
 		finishResp := ChatCompletionChunk{
 			ID:      responseID,
 			Object:  "chat.completion.chunk",
@@ -243,7 +254,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				{
 					Delta:        Delta{},
 					Index:        0,
-					FinishReason: "stop",
+					FinishReason: &finishReason,
 				},
 			},
 		}
@@ -252,6 +263,8 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "data: %s\n\n", string(finishData))
 		fmt.Fprintf(w, "data: [DONE]\n\n")
 		flusher.Flush()
+
+		log.Printf("[%s] SUCCESS: stream completed", requestID)
 	} else {
 		// 非流式响应：收集完整内容
 		scanner := bufio.NewScanner(resp.Body)
@@ -263,6 +276,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err := scanner.Err(); err != nil {
+			log.Printf("[%s] ERROR: Response stream failed: %v", requestID, err)
 			http.Error(w, "Failed to read response stream", http.StatusInternalServerError)
 			return
 		}
@@ -270,10 +284,8 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// 检查并处理空内容
 		if strings.TrimSpace(fullContent) == "" {
 			fullContent = FallbackMsg
-			log.Printf("Warning: Empty response content, using fallback message")
+			log.Printf("[%s] WARN: Empty response, using fallback", requestID)
 		}
-
-		log.Printf("Final response content length: %d", len(fullContent))
 
 		// Convert to OpenAI API format
 		openAIResp := ChatCompletionsResponse{
@@ -292,7 +304,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 						Role:    "assistant",
 						Content: fullContent,
 					},
-					FinishReason: "stop",
+					FinishReason: stopSignal,
 					Index:        0,
 				},
 			},
@@ -300,6 +312,8 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(openAIResp)
+
+		log.Printf("[%s] SUCCESS: response_len=%d", requestID, len(fullContent))
 	}
 }
 

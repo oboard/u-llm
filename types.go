@@ -41,7 +41,7 @@ type Message struct {
 
 type Choice struct {
 	Message      Message `json:"message"`
-	FinishReason string  `json:"finish_reason"`
+	FinishReason *string `json:"finish_reason"`
 	Index        int     `json:"index"`
 }
 
@@ -67,9 +67,9 @@ type Delta struct {
 }
 
 type StreamChoice struct {
-	Delta        Delta  `json:"delta"`
-	FinishReason string `json:"finish_reason"`
-	Index        int    `json:"index"`
+	Delta        Delta   `json:"delta"`
+	FinishReason *string `json:"finish_reason"`
+	Index        int     `json:"index"`
 }
 
 type ChatCompletionChunk struct {
