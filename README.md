@@ -14,7 +14,6 @@ U-LLM 是一个大语言模型代理服务，提供了一个OpenAI格式的API�
 服务器启动在 http://0.0.0.0:8080
 可用接口:
   POST http://0.0.0.0:8080/v1/chat/completions - 聊天完成
-  POST http://0.0.0.0:8080/v1/completions - 文本完成
   POST http://0.0.0.0:8080/v1/responses - OpenAI统一响应接口
   GET  http://0.0.0.0:8080/v1/models - 模型列表
   GET  http://0.0.0.0:8080/v1/chat/history - OpenAI格式历史记录

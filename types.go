@@ -305,3 +305,10 @@ type CompletionsStreamChunk struct {
 	Model   string                    `json:"model"`
 	Choices []CompletionsStreamChoice `json:"choices"`
 }
+
+// 统一的流式响应格式
+type UnifiedStreamChunk struct {
+	ID    string `json:"id"`
+	Type  string `json:"type"`  // "response.output_text.delta" 或 "response.completed"
+	Delta string `json:"delta,omitempty"` // 增量文本内容，仅在 delta 类型时存在
+}
