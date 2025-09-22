@@ -55,11 +55,14 @@ func createResponseMetadata() (string, int64) {
 
 // 通用聊天处理参数
 type ChatProcessParams struct {
-	Model      string
-	Prompt     string
-	UserAPIKey string
-	IsStream   bool
-	RequestID  string
+	Model       string
+	Prompt      string
+	UserAPIKey  string
+	IsStream    bool
+	RequestID   string
+	MaxTokens   *int     // Completions API 支持
+	Temperature *float64 // Completions API 支持
+	Stop        []string // Completions API 支持
 }
 
 // 通用聊天处理函数 - 消除重复代码
@@ -593,6 +596,178 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func handleCompletions(w http.ResponseWriter, r *http.Request) {
+	// 生成请求ID用于追踪
+	requestID := fmt.Sprintf("req_%d", time.Now().UnixNano())
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// 检查并提取用户的API key
+	auth := r.Header.Get("Authorization")
+	if auth == "" {
+		http.Error(w, "Unauthorized: Missing Authorization header", http.StatusUnauthorized)
+		return
+	}
+	userApiKey := strings.TrimPrefix(auth, "Bearer ")
+	if userApiKey == auth { // 如果没有Bearer前缀
+		userApiKey = auth
+	}
+
+	// 读取请求体
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		log.Printf("[%s] ERROR: Failed to read request body: %v", requestID, err)
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+
+	// 解析请求体
+	var req CompletionsRequest
+	if json.Unmarshal(body, &req) != nil {
+		log.Printf("[%s] ERROR: Invalid JSON payload: %v", requestID, err)
+		http.Error(w, fmt.Sprintf("Invalid request payload: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// 关键信息日志
+	log.Printf("[%s] model=%s prompt_len=%d stream=%v user=%.8s",
+		requestID, req.Model, len(req.Prompt),
+		req.Stream != nil && *req.Stream, userApiKey)
+
+	// 使用通用处理函数
+	params := ChatProcessParams{
+		Model:       req.Model,
+		Prompt:      req.Prompt,
+		UserAPIKey:  userApiKey,
+		IsStream:    req.Stream != nil && *req.Stream,
+		RequestID:   requestID,
+		MaxTokens:   req.MaxTokens,
+		Temperature: req.Temperature,
+		Stop:        req.Stop,
+	}
+
+	resp, err := processChatRequest(params)
+	if err != nil {
+		log.Printf("[%s] ERROR: %v", requestID, err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+
+	// 生成响应ID和时间戳
+	responseID, createdTime := createResponseMetadata()
+
+	// 检查是否为流式请求
+	if req.Stream != nil && *req.Stream {
+		// 流式响应
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+			return
+		}
+
+		// 实时转发流式数据
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			if data, ok := parseSSEData(scanner.Text()); ok && data != "" {
+				// 转换为 Completions API 格式并立即发送
+				chunkResp := CompletionsStreamChunk{
+					ID:      responseID,
+					Object:  "text_completion",
+					Created: createdTime,
+					Model:   req.Model,
+					Choices: []CompletionsStreamChoice{{
+						Text:         data,
+						Index:        0,
+						FinishReason: nil, // 中间消息的finish_reason为null
+					}},
+				}
+
+				chunkData, _ := json.Marshal(chunkResp)
+				fmt.Fprintf(w, "data: %s\n\n", string(chunkData))
+				flusher.Flush()
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			log.Printf("[%s] ERROR: Stream read failed: %v", requestID, err)
+		}
+
+		// 发送结束标记
+		finishReason := "stop"
+		finishResp := CompletionsStreamChunk{
+			ID:      responseID,
+			Object:  "text_completion",
+			Created: createdTime,
+			Model:   req.Model,
+			Choices: []CompletionsStreamChoice{{
+				Text:         "",
+				Index:        0,
+				FinishReason: &finishReason,
+			}},
+		}
+
+		finishData, _ := json.Marshal(finishResp)
+		fmt.Fprintf(w, "data: %s\n\n", string(finishData))
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		flusher.Flush()
+
+		log.Printf("[%s] SUCCESS: stream completed", requestID)
+	} else {
+		// 非流式响应：收集完整内容
+		scanner := bufio.NewScanner(resp.Body)
+		var fullContent string
+		for scanner.Scan() {
+			if data, ok := parseSSEData(scanner.Text()); ok {
+				fullContent += data
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			log.Printf("[%s] ERROR: Response stream failed: %v", requestID, err)
+			http.Error(w, "Failed to read response stream", http.StatusInternalServerError)
+			return
+		}
+
+		// 检查并处理空内容
+		if strings.TrimSpace(fullContent) == "" {
+			fullContent = FallbackMsg
+			log.Printf("[%s] WARN: Empty response, using fallback", requestID)
+		}
+
+		// 转换为 Completions API 格式
+		completionsResp := CompletionsResponse{
+			ID:      responseID,
+			Object:  "text_completion",
+			Created: createdTime,
+			Model:   req.Model,
+			Choices: []CompletionsChoice{{
+				Text:         fullContent,
+				Index:        0,
+				FinishReason: stopSignal,
+			}},
+			Usage: Usage{
+				PromptTokens:     0, // Token counts not available
+				CompletionTokens: 0, // Token counts not available
+				TotalTokens:      0, // Token counts not available
+			},
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(completionsResp)
+
+		log.Printf("[%s] SUCCESS: response_len=%d", requestID, len(fullContent))
+	}
+}
+
 func handleOpenAIHistory(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
@@ -703,6 +878,7 @@ func handleOpenAIHistory(w http.ResponseWriter, r *http.Request) {
 
 func startServer(port int) error {
 	http.HandleFunc("/v1/chat/completions", handleChatCompletions)
+	http.HandleFunc("/v1/completions", handleCompletions)
 	http.HandleFunc("/v1/models", handleModels)
 	http.HandleFunc("/v1/chat/history", handleOpenAIHistory)
 	http.HandleFunc("/v1/responses", handleResponses)
@@ -713,11 +889,12 @@ func startServer(port int) error {
 	})))
 
 	addr := fmt.Sprintf(":%d", port)
-	fmt.Printf("服务器启动在 http://localhost%s\n", addr)
+	fmt.Printf("服务器启动在 http://0.0.0.0%s\n", addr)
 	fmt.Printf("可用接口:\n")
-	fmt.Printf("  POST http://localhost%s/v1/chat/completions - 聊天完成\n", addr)
-	fmt.Printf("  POST http://localhost%s/v1/responses - OpenAI统一响应接口\n", addr)
-	fmt.Printf("  GET  http://localhost%s/v1/models - 模型列表\n", addr)
-	fmt.Printf("  GET  http://localhost%s/v1/chat/history - OpenAI格式历史记录\n", addr)
+	fmt.Printf("  POST http://0.0.0.0%s/v1/chat/completions - 聊天完成\n", addr)
+	fmt.Printf("  POST http://0.0.0.0%s/v1/completions - 文本完成\n", addr)
+	fmt.Printf("  POST http://0.0.0.0%s/v1/responses - OpenAI统一响应接口\n", addr)
+	fmt.Printf("  GET  http://0.0.0.0%s/v1/models - 模型列表\n", addr)
+	fmt.Printf("  GET  http://0.0.0.0%s/v1/chat/history - OpenAI格式历史记录\n", addr)
 	return http.ListenAndServe(addr, nil)
 }

@@ -262,3 +262,46 @@ type ResponsesStreamChunk struct {
 	Type  string               `json:"type"` // "message_delta"
 	Delta ResponsesStreamDelta `json:"delta"`
 }
+
+// Completions API 相关结构体
+type CompletionsRequest struct {
+	Model         string    `json:"model"`
+	Prompt        string    `json:"prompt"`
+	MaxTokens     *int      `json:"max_tokens,omitempty"`
+	Temperature   *float64  `json:"temperature,omitempty"`
+	Stop          []string  `json:"stop,omitempty"`
+	Stream        *bool     `json:"stream,omitempty"`
+	StreamOptions *struct {
+		IncludeUsage bool `json:"include_usage,omitempty"`
+	} `json:"stream_options,omitempty"`
+}
+
+type CompletionsChoice struct {
+	Text         string  `json:"text"`
+	Index        int     `json:"index"`
+	FinishReason *string `json:"finish_reason"`
+}
+
+type CompletionsResponse struct {
+	ID      string              `json:"id"`
+	Object  string              `json:"object"`
+	Created int64               `json:"created"`
+	Model   string              `json:"model"`
+	Choices []CompletionsChoice `json:"choices"`
+	Usage   Usage               `json:"usage"`
+}
+
+// Completions 流式响应结构体
+type CompletionsStreamChoice struct {
+	Text         string  `json:"text"`
+	Index        int     `json:"index"`
+	FinishReason *string `json:"finish_reason"`
+}
+
+type CompletionsStreamChunk struct {
+	ID      string                    `json:"id"`
+	Object  string                    `json:"object"`
+	Created int64                     `json:"created"`
+	Model   string                    `json:"model"`
+	Choices []CompletionsStreamChoice `json:"choices"`
+}
