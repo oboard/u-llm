@@ -212,3 +212,53 @@ type OpenAIHistoryResponse struct {
 	Object string               `json:"object"`
 	Data   []OpenAIConversation `json:"data"`
 }
+
+// OpenAI Responses API 数据结构
+type ResponsesInputContent struct {
+	Type     string `json:"type"`                // "input_text" 或 "input_image"
+	Text     string `json:"text,omitempty"`      // 文本内容
+	ImageURL string `json:"image_url,omitempty"` // 图片URL
+}
+
+type ResponsesInputMessage struct {
+	Role    string                   `json:"role"`
+	Content []ResponsesInputContent  `json:"content"`
+}
+
+type ResponsesRequest struct {
+	Model  string      `json:"model"`
+	Input  interface{} `json:"input"`  // 可以是字符串或 []ResponsesInputMessage
+	Stream *bool       `json:"stream,omitempty"`
+}
+
+type ResponsesOutputContent struct {
+	Type string `json:"type"` // "output_text"
+	Text string `json:"text"`
+}
+
+type ResponsesOutputMessage struct {
+	ID      string                    `json:"id"`
+	Type    string                    `json:"type"` // "message"
+	Role    string                    `json:"role"` // "assistant"
+	Content []ResponsesOutputContent `json:"content"`
+}
+
+type ResponsesResponse struct {
+	ID      string                    `json:"id"`
+	Object  string                    `json:"object"` // "response"
+	Created int64                     `json:"created"`
+	Model   string                    `json:"model"`
+	Output  []ResponsesOutputMessage `json:"output"`
+	Usage   Usage                     `json:"usage"`
+}
+
+// 流式响应结构
+type ResponsesStreamDelta struct {
+	Content []ResponsesOutputContent `json:"content,omitempty"`
+}
+
+type ResponsesStreamChunk struct {
+	ID    string               `json:"id"`
+	Type  string               `json:"type"` // "message_delta"
+	Delta ResponsesStreamDelta `json:"delta"`
+}

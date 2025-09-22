@@ -53,6 +53,70 @@ func createResponseMetadata() (string, int64) {
 	return fmt.Sprintf("chatcmpl-%d", now), now
 }
 
+// 通用聊天处理参数
+type ChatProcessParams struct {
+	Model      string
+	Prompt     string
+	UserAPIKey string
+	IsStream   bool
+	RequestID  string
+}
+
+// 通用聊天处理函数 - 消除重复代码
+func processChatRequest(params ChatProcessParams) (*http.Response, error) {
+	// Get token for authentication
+	token, err := getToken()
+	if err != nil {
+		return nil, fmt.Errorf("auth failed: %v", err)
+	}
+
+	// Prepare request body
+	requestBody := map[string]any{
+		"query":  params.Prompt,
+		"images": []string{},
+	}
+
+	jsonBody, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request body: %v", err)
+	}
+
+	// Create request to Ulearning API
+	apiReq, err := http.NewRequest("POST", APIURL, bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %v", err)
+	}
+
+	// Set required headers
+	apiReq.Header.Set("Authorization", token)
+	apiReq.Header.Set("Content-Type", "application/json;charset=UTF-8")
+
+	// Add query parameters
+	q := apiReq.URL.Query()
+	q.Add("sessionId", params.UserAPIKey)
+	q.Add("assistantId", AssistantID)
+	q.Add("modelId", GetModelAPIID(params.Model))
+	q.Add("sessionSign", SessionSign)
+	q.Add("askType", AskType)
+	q.Add("requestId", strconv.FormatInt(time.Now().Unix(), 10))
+	apiReq.URL.RawQuery = q.Encode()
+
+	// Send request
+	client := &http.Client{}
+	resp, err := client.Do(apiReq)
+	if err != nil {
+		return nil, fmt.Errorf("API request failed: %v", err)
+	}
+
+	// Check response status
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return nil, fmt.Errorf("API request failed with status: %d", resp.StatusCode)
+	}
+
+	return resp, nil
+}
+
 var stopSignal = func() *string {
 	finishReason := "stop"
 	return &finishReason
@@ -333,6 +397,202 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(modelsResp)
 }
 
+func handleResponses(w http.ResponseWriter, r *http.Request) {
+	// 生成请求ID用于追踪
+	requestID := fmt.Sprintf("req_%d", time.Now().UnixNano())
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// 检查并提取用户的API key
+	auth := r.Header.Get("Authorization")
+	if auth == "" {
+		http.Error(w, "Unauthorized: Missing Authorization header", http.StatusUnauthorized)
+		return
+	}
+	userApiKey := strings.TrimPrefix(auth, "Bearer ")
+	if userApiKey == auth {
+		userApiKey = auth
+	}
+
+	// 读取请求体
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		log.Printf("[%s] ERROR: Failed to read request body: %v", requestID, err)
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+
+	// 解析请求体
+	var req ResponsesRequest
+	if json.Unmarshal(body, &req) != nil {
+		log.Printf("[%s] ERROR: Invalid JSON payload: %v", requestID, err)
+		http.Error(w, fmt.Sprintf("Invalid request payload: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// 提取prompt内容
+	var prompt string
+	switch input := req.Input.(type) {
+	case string:
+		// 简单文本输入
+		prompt = input
+	case []interface{}:
+		// 多模态输入 - 目前只处理文本部分
+		for _, item := range input {
+			if msgMap, ok := item.(map[string]interface{}); ok {
+				if role, exists := msgMap["role"]; exists && role == "user" {
+					if content, exists := msgMap["content"]; exists {
+						if contentArray, ok := content.([]interface{}); ok {
+							for _, contentItem := range contentArray {
+								if contentMap, ok := contentItem.(map[string]interface{}); ok {
+									if contentType, exists := contentMap["type"]; exists && contentType == "input_text" {
+										if text, exists := contentMap["text"]; exists {
+											if textStr, ok := text.(string); ok {
+												prompt = textStr
+												break
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	default:
+		prompt = fmt.Sprintf("%v", input)
+	}
+
+	if prompt == "" {
+		http.Error(w, "No valid input found", http.StatusBadRequest)
+		return
+	}
+
+	// 关键信息日志
+	log.Printf("[%s] model=%s prompt_len=%d stream=%v user=%.8s",
+		requestID, req.Model, len(prompt),
+		req.Stream != nil && *req.Stream, userApiKey)
+
+	// 使用通用处理函数
+	params := ChatProcessParams{
+		Model:      req.Model,
+		Prompt:     prompt,
+		UserAPIKey: userApiKey,
+		IsStream:   req.Stream != nil && *req.Stream,
+		RequestID:  requestID,
+	}
+
+	resp, err := processChatRequest(params)
+	if err != nil {
+		log.Printf("[%s] ERROR: %v", requestID, err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+
+	// 生成响应ID和时间戳
+	responseID, createdTime := createResponseMetadata()
+
+	// 检查是否为流式请求
+	if req.Stream != nil && *req.Stream {
+		// 流式响应
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+			return
+		}
+
+		// 实时转发流式数据
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			if data, ok := parseSSEData(scanner.Text()); ok && data != "" {
+				// 转换为 Responses API 格式
+				chunkResp := ResponsesStreamChunk{
+					ID:   responseID,
+					Type: "message_delta",
+					Delta: ResponsesStreamDelta{
+						Content: []ResponsesOutputContent{{
+							Type: "output_text",
+							Text: data,
+						}},
+					},
+				}
+
+				chunkData, _ := json.Marshal(chunkResp)
+				fmt.Fprintf(w, "data: %s\n\n", string(chunkData))
+				flusher.Flush()
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			log.Printf("[%s] ERROR: Stream read failed: %v", requestID, err)
+		}
+
+		// 发送结束标记
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		flusher.Flush()
+
+		log.Printf("[%s] SUCCESS: stream completed", requestID)
+	} else {
+		// 非流式响应
+		scanner := bufio.NewScanner(resp.Body)
+		var fullContent string
+		for scanner.Scan() {
+			if data, ok := parseSSEData(scanner.Text()); ok {
+				fullContent += data
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			log.Printf("[%s] ERROR: Response stream failed: %v", requestID, err)
+			http.Error(w, "Failed to read response stream", http.StatusInternalServerError)
+			return
+		}
+
+		// 检查并处理空内容
+		if strings.TrimSpace(fullContent) == "" {
+			fullContent = FallbackMsg
+			log.Printf("[%s] WARN: Empty response, using fallback", requestID)
+		}
+
+		// 转换为 Responses API 格式
+		responsesResp := ResponsesResponse{
+			ID:      responseID,
+			Object:  "response",
+			Created: createdTime,
+			Model:   req.Model,
+			Output: []ResponsesOutputMessage{{
+				ID:   "msg_1",
+				Type: "message",
+				Role: "assistant",
+				Content: []ResponsesOutputContent{{
+					Type: "output_text",
+					Text: fullContent,
+				}},
+			}},
+			Usage: Usage{
+				PromptTokens:     0, // Token counts not available
+				CompletionTokens: 0, // Token counts not available
+				TotalTokens:      0, // Token counts not available
+			},
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(responsesResp)
+
+		log.Printf("[%s] SUCCESS: response_len=%d", requestID, len(fullContent))
+	}
+}
+
 func handleOpenAIHistory(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
@@ -445,6 +705,7 @@ func startServer(port int) error {
 	http.HandleFunc("/v1/chat/completions", handleChatCompletions)
 	http.HandleFunc("/v1/models", handleModels)
 	http.HandleFunc("/v1/chat/history", handleOpenAIHistory)
+	http.HandleFunc("/v1/responses", handleResponses)
 	// log所有请求
 	http.Handle("/", http.StripPrefix("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Received request: %s %s", r.Method, r.URL.Path)
@@ -455,6 +716,7 @@ func startServer(port int) error {
 	fmt.Printf("服务器启动在 http://localhost%s\n", addr)
 	fmt.Printf("可用接口:\n")
 	fmt.Printf("  POST http://localhost%s/v1/chat/completions - 聊天完成\n", addr)
+	fmt.Printf("  POST http://localhost%s/v1/responses - OpenAI统一响应接口\n", addr)
 	fmt.Printf("  GET  http://localhost%s/v1/models - 模型列表\n", addr)
 	fmt.Printf("  GET  http://localhost%s/v1/chat/history - OpenAI格式历史记录\n", addr)
 	return http.ListenAndServe(addr, nil)
