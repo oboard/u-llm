@@ -40,6 +40,10 @@ model_id: [MODEL_ID]
         "modelName": "DeepSeekR1",
     },
     {
+        "modelId": "deepseek-v3.1",
+        "modelName": "DeepSeekV3.1",
+    },
+    {
         "modelId": "qianwen-vl",
         "modelName": "通义千问VL",
     },

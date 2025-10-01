@@ -15,13 +15,32 @@ import (
 
 // 常量定义
 const (
-	APIURL        = "https://cloudsearchapi.ulearning.cn/kbChat/chat"
-	HistoryAPIURL = "https://cloudsearchapi.ulearning.cn/kbChat/historyList?assistantId=6"
-	AssistantID   = "6"
-	SessionSign   = "2"
-	AskType       = "1"
-	FallbackMsg   = "抱歉，我无法处理您的请求。请稍后再试。"
+	APIURL      = "https://cloudsearchapi.ulearning.cn/kbChat/chat"
+	SessionSign = "2"
+	AskType     = "1"
+	FallbackMsg = "抱歉，我无法处理您的请求。请稍后再试。"
 )
+
+// AI助手ID池
+var aiAssistantIDs = []string{
+	"6", "27", "36", "37", "90", "95",
+	"119", "122", "509", "727", "959", "1788",
+}
+
+// 轮询索引
+var assistantIndex = 0
+
+// 轮询选择一个AI助手ID
+func getNextAssistantID() string {
+	id := aiAssistantIDs[assistantIndex]
+	assistantIndex = (assistantIndex + 1) % len(aiAssistantIDs)
+	return id
+}
+
+// 构建历史记录API URL
+func getHistoryAPIURL() string {
+	return fmt.Sprintf("https://cloudsearchapi.ulearning.cn/kbChat/historyList?assistantId=%s", getNextAssistantID())
+}
 
 // 辅助函数：返回空历史记录
 func returnEmptyHistory(w http.ResponseWriter) {
@@ -97,7 +116,7 @@ func processChatRequest(params ChatProcessParams) (*http.Response, error) {
 	// Add query parameters
 	q := apiReq.URL.Query()
 	q.Add("sessionId", params.UserAPIKey)
-	q.Add("assistantId", AssistantID)
+	q.Add("assistantId", getNextAssistantID())
 	q.Add("modelId", GetModelAPIID(params.Model))
 	q.Add("sessionSign", SessionSign)
 	q.Add("askType", AskType)
@@ -242,7 +261,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Add query parameters
 	q := apiReq.URL.Query()
 	q.Add("sessionId", userApiKey) // 使用用户的API key作为sessionId
-	q.Add("assistantId", AssistantID)
+	q.Add("assistantId", getNextAssistantID())
 	q.Add("modelId", GetModelAPIID(req.Model))
 	q.Add("sessionSign", SessionSign)
 	q.Add("askType", AskType)
@@ -613,7 +632,8 @@ func handleOpenAIHistory(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimPrefix(auth, "Bearer ")
 
 	// 调用kbChat API获取历史记录
-	req, err := http.NewRequest("GET", HistoryAPIURL, nil)
+	historyURL := getHistoryAPIURL()
+	req, err := http.NewRequest("GET", historyURL, nil)
 	if err != nil {
 		log.Printf("Failed to create request: %v", err)
 		returnEmptyHistory(w)
@@ -623,7 +643,7 @@ func handleOpenAIHistory(w http.ResponseWriter, r *http.Request) {
 	// 设置请求头
 	req.Header.Set("Authorization", token)
 	req.Header.Set("Content-Type", "application/json")
-	log.Printf("Calling kbChat API: %s with token: %s", HistoryAPIURL, token)
+	log.Printf("Calling kbChat API: %s with token: %s", historyURL, token)
 
 	// 发送请求
 	client := &http.Client{Timeout: 30 * time.Second}

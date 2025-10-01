@@ -128,15 +128,15 @@ var ModelConfigs = []ModelConfig{
 		OwnedBy: "ulearning",
 	},
 	{
-		ID:      "deepseek-r1-online",
-		APIID:   "5",
+		ID:      "deepseek-r1-local",
+		APIID:   "6",
 		Object:  "model",
 		Created: 1712361441,
 		OwnedBy: "ulearning",
 	},
 	{
-		ID:      "deepseek-r1-local",
-		APIID:   "6",
+		ID:      "deepseek-v3.1",
+		APIID:   "7",
 		Object:  "model",
 		Created: 1712361441,
 		OwnedBy: "ulearning",
@@ -221,13 +221,13 @@ type ResponsesInputContent struct {
 }
 
 type ResponsesInputMessage struct {
-	Role    string                   `json:"role"`
-	Content []ResponsesInputContent  `json:"content"`
+	Role    string                  `json:"role"`
+	Content []ResponsesInputContent `json:"content"`
 }
 
 type ResponsesRequest struct {
 	Model  string      `json:"model"`
-	Input  interface{} `json:"input"`  // 可以是字符串或 []ResponsesInputMessage
+	Input  interface{} `json:"input"` // 可以是字符串或 []ResponsesInputMessage
 	Stream *bool       `json:"stream,omitempty"`
 }
 
@@ -237,19 +237,19 @@ type ResponsesOutputContent struct {
 }
 
 type ResponsesOutputMessage struct {
-	ID      string                    `json:"id"`
-	Type    string                    `json:"type"` // "message"
-	Role    string                    `json:"role"` // "assistant"
+	ID      string                   `json:"id"`
+	Type    string                   `json:"type"` // "message"
+	Role    string                   `json:"role"` // "assistant"
 	Content []ResponsesOutputContent `json:"content"`
 }
 
 type ResponsesResponse struct {
-	ID      string                    `json:"id"`
-	Object  string                    `json:"object"` // "response"
-	Created int64                     `json:"created"`
-	Model   string                    `json:"model"`
+	ID      string                   `json:"id"`
+	Object  string                   `json:"object"` // "response"
+	Created int64                    `json:"created"`
+	Model   string                   `json:"model"`
 	Output  []ResponsesOutputMessage `json:"output"`
-	Usage   Usage                     `json:"usage"`
+	Usage   Usage                    `json:"usage"`
 }
 
 // 流式响应结构
@@ -265,12 +265,12 @@ type ResponsesStreamChunk struct {
 
 // Completions API 相关结构体
 type CompletionsRequest struct {
-	Model         string    `json:"model"`
-	Prompt        string    `json:"prompt"`
-	MaxTokens     *int      `json:"max_tokens,omitempty"`
-	Temperature   *float64  `json:"temperature,omitempty"`
-	Stop          []string  `json:"stop,omitempty"`
-	Stream        *bool     `json:"stream,omitempty"`
+	Model         string   `json:"model"`
+	Prompt        string   `json:"prompt"`
+	MaxTokens     *int     `json:"max_tokens,omitempty"`
+	Temperature   *float64 `json:"temperature,omitempty"`
+	Stop          []string `json:"stop,omitempty"`
+	Stream        *bool    `json:"stream,omitempty"`
 	StreamOptions *struct {
 		IncludeUsage bool `json:"include_usage,omitempty"`
 	} `json:"stream_options,omitempty"`
@@ -309,6 +309,6 @@ type CompletionsStreamChunk struct {
 // 统一的流式响应格式
 type UnifiedStreamChunk struct {
 	ID    string `json:"id"`
-	Type  string `json:"type"`  // "response.output_text.delta" 或 "response.completed"
+	Type  string `json:"type"`            // "response.output_text.delta" 或 "response.completed"
 	Delta string `json:"delta,omitempty"` // 增量文本内容，仅在 delta 类型时存在
 }
