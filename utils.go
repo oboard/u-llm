@@ -29,5 +29,7 @@ func extractTextContent(content any) string {
 func help() {
 	fmt.Printf("使用方法: ullm <command> [arguments]\n")
 	fmt.Printf("可用命令:\n")
-	fmt.Printf("  serve --port PORT    启动HTTP服务器\n")
+	fmt.Printf("  serve --port PORT [--debug]    启动HTTP服务器\n")
+	fmt.Printf("    --port PORT     指定服务器端口号 (默认: 8080)\n")
+	fmt.Printf("    --debug         启用调试模式，打印详细的客户端请求日志，包括404错误\n")
 }

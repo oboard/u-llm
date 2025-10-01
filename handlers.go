@@ -21,6 +21,9 @@ const (
 	FallbackMsg = "抱歉，我无法处理您的请求。请稍后再试。"
 )
 
+// 全局调试标志
+var debugMode bool
+
 // AI助手ID池
 var aiAssistantIDs = []string{
 	"6", "27", "36", "37", "90", "95",
@@ -727,16 +730,40 @@ func handleOpenAIHistory(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func startServer(port int) error {
-	http.HandleFunc("/v1/chat/completions", handleChatCompletions)
-	http.HandleFunc("/v1/models", handleModels)
-	http.HandleFunc("/v1/chat/history", handleOpenAIHistory)
-	http.HandleFunc("/v1/responses", handleResponses)
-	// log所有请求
-	http.Handle("/", http.StripPrefix("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("Received request: %s %s", r.Method, r.URL.Path)
-		http.DefaultServeMux.ServeHTTP(w, r)
-	})))
+// 日志中间件包装函数
+func logMiddleware(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if debugMode {
+			// 调试模式：记录详细信息
+			log.Printf("[DEBUG] %s %s %s - Headers: %v", r.Method, r.URL.Path, r.RemoteAddr, r.Header)
+		} else {
+			// 普通模式：只记录基本信息
+			log.Printf("Received request: %s %s", r.Method, r.URL.Path)
+		}
+		handler(w, r)
+	}
+}
+
+func startServer(port int, debug bool) error {
+	// 设置全局调试模式
+	debugMode = debug
+
+	// 注册带日志中间件的路由
+	http.HandleFunc("/v1/chat/completions", logMiddleware(handleChatCompletions))
+	http.HandleFunc("/v1/models", logMiddleware(handleModels))
+	http.HandleFunc("/v1/chat/history", logMiddleware(handleOpenAIHistory))
+	http.HandleFunc("/v1/responses", logMiddleware(handleResponses))
+
+	// 处理404情况
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if debugMode {
+			log.Printf("[DEBUG] %s %s %s - Headers: %v", r.Method, r.URL.Path, r.RemoteAddr, r.Header)
+			log.Printf("[DEBUG] 404 Not Found: %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
+		} else {
+			log.Printf("Received request: %s %s", r.Method, r.URL.Path)
+		}
+		http.NotFound(w, r)
+	})
 
 	addr := fmt.Sprintf(":%d", port)
 	fmt.Printf("服务器启动在 http://0.0.0.0%s\n", addr)

@@ -12,6 +12,7 @@ func main() {
 
 	// 定义serve命令的端口参数
 	port := serveCmd.Int("port", 8080, "服务器端口号")
+	debug := serveCmd.Bool("debug", false, "启用调试模式，打印详细的客户端请求日志")
 
 	if len(os.Args) < 2 {
 		help()
@@ -21,7 +22,7 @@ func main() {
 	switch os.Args[1] {
 	case "serve":
 		serveCmd.Parse(os.Args[2:])
-		if err := startServer(*port); err != nil {
+		if err := startServer(*port, *debug); err != nil {
 			log.Fatalf("服务器启动失败: %v", err)
 		}
 	default:
