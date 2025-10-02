@@ -118,12 +118,13 @@ func processChatRequest(params ChatProcessParams) (*http.Response, error) {
 
 	// Add query parameters
 	q := apiReq.URL.Query()
-	q.Add("sessionId", params.UserAPIKey)
+	now := strconv.FormatInt(time.Now().Unix(), 10)
+	q.Add("sessionId", now)
 	q.Add("assistantId", getNextAssistantID())
 	q.Add("modelId", GetModelAPIID(params.Model))
 	q.Add("sessionSign", SessionSign)
 	q.Add("askType", AskType)
-	q.Add("requestId", strconv.FormatInt(time.Now().Unix(), 10))
+	q.Add("requestId", params.RequestID)
 	apiReq.URL.RawQuery = q.Encode()
 
 	// Send request
